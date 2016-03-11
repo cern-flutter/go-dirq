@@ -35,11 +35,11 @@ package dirq
 //	return outsize;
 //}
 //
-//static const char* dirq_add_wrapper(dirq_t dirq, const char *msg)
+//static const char* dirq_add_wrapper(dirq_t dirq, const char *msg, size_t len)
 //{
 //	buffer = msg;
 //	offset = 0;
-//	length = strlen(msg);
+//	length = len;
 //	return dirq_add(dirq, dirq_iow_callback);
 //}
 import "C"
@@ -101,11 +101,8 @@ func (dirq *Dirq) Consume() <-chan DirqMsg {
 }
 
 // Produce a single message.
-func (dirq *Dirq) Produce(msg string) error {
-	cMsg := C.CString(msg)
-	defer C.free(unsafe.Pointer(cMsg))
-
-	C.dirq_add_wrapper(dirq.handle, cMsg)
+func (dirq *Dirq) Produce(msg []byte) error {
+	C.dirq_add_wrapper(dirq.handle, (*C.char)(unsafe.Pointer(&msg[0])), C.size_t(len(msg)))
 	if C.dirq_get_errcode(dirq.handle) != 0 {
 		errStr := C.GoString(C.dirq_get_errstr(dirq.handle))
 		return fmt.Errorf("Failed to produce a message: %s", errStr)

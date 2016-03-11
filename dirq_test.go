@@ -44,7 +44,7 @@ func TestSimpleProduceConsume(t *testing.T) {
 	original.PushBack("HOWDY")
 
 	for iter := original.Front(); iter != nil; iter = iter.Next() {
-		err = dirq.Produce(string(iter.Value.(string)))
+		err = dirq.Produce([]byte(iter.Value.(string)))
 		if err != nil {
 			t.Error("Error when producing a message.", err.Error())
 		}
