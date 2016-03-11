@@ -20,6 +20,7 @@ import (
 	"container/list"
 	"os"
 	"testing"
+	"reflect"
 )
 
 var dirqPath = "/tmp/dirq_test"
@@ -30,6 +31,7 @@ func produceCheck(t *testing.T, err error) {
 	}
 }
 
+// Produce and consume 3 messages
 func TestSimpleProduceConsume(t *testing.T) {
 	dirq, err := New(dirqPath)
 	if err != nil {
@@ -72,6 +74,29 @@ func TestSimpleProduceConsume(t *testing.T) {
 	err = dirq.Purge()
 	if err != nil {
 		t.Error("Failed to purge.", err.Error())
+	}
+}
+
+// Produce and consume a message that has an embedded zero
+func TestAZero(t *testing.T) {
+	dirq, err := New(dirqPath)
+	if err != nil {
+		t.Error("Failed to open the queue directory.", err.Error())
+		return
+	}
+	defer dirq.Close()
+
+	original := []byte{'a', 'b', 'c', 0x00, 'd', 'e'}
+	dirq.Produce(original)
+
+	consumed := <- dirq.Consume()
+	if consumed.Error != nil {
+		t.Error("Failed to consume: %s", consumed.Error.Error())
+		return
+	}
+
+	if !reflect.DeepEqual(consumed.Message, original) {
+		t.Error("Consumed message does not match the generated one")
 	}
 }
 

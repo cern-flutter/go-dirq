@@ -25,12 +25,12 @@ package dirq
 //
 //static int dirq_iow_callback(dirq_t dirq, char *out, size_t outsize)
 //{
-//	if (offset > length)
+//	if (offset >= length)
 //		return 0;
 //	int remaining = length - offset;
 //	if (outsize > remaining)
 //		outsize = remaining;
-//	strncpy(out, buffer + offset, outsize);
+//	memcpy(out, buffer + offset, outsize);
 //	offset += outsize;
 //	return outsize;
 //}
