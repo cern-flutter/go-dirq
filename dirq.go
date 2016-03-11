@@ -54,7 +54,7 @@ type Dirq struct {
 }
 
 type DirqMsg struct {
-	Message string
+	Message []byte
 	Error   error
 }
 
@@ -85,17 +85,11 @@ func (dirq *Dirq) Consume() <-chan DirqMsg {
 		iter := C.dirq_first(dirq.handle)
 		for iter != nil {
 			var msg DirqMsg
-			var rawMsg []byte
 
 			if C.dirq_lock(dirq.handle, iter, 0) == 0 {
 				path := C.dirq_get_path(dirq.handle, iter)
-				rawMsg, msg.Error = ioutil.ReadFile(C.GoString(path))
-				if msg.Error == nil {
-					msg.Message = string(rawMsg)
-				}
-
+				msg.Message, msg.Error = ioutil.ReadFile(C.GoString(path))
 				C.dirq_remove(dirq.handle, iter)
-
 				messages <- msg
 			}
 
