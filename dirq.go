@@ -59,11 +59,13 @@ type DirqMsg struct {
 }
 
 // Construct a new DirQ handle.
-func New(path string) (dirq Dirq, err error) {
+func New(path string) (dirq *Dirq, err error) {
 	cPath := C.CString(path)
 	defer C.free(unsafe.Pointer(cPath))
 
-	dirq.handle = C.dirq_new(cPath)
+	dirq = &Dirq{
+		handle: C.dirq_new(cPath),
+	}
 	if C.dirq_get_errcode(dirq.handle) != 0 {
 		errStr := C.GoString(C.dirq_get_errstr(dirq.handle))
 		err = fmt.Errorf("Failed to create the DirQ handle: %s", errStr)
