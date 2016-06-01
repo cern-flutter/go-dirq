@@ -16,7 +16,7 @@
 
 package dirq
 
-//#cgo pkg-config: --static dirq
+//#cgo pkg-config: libdirq 
 //#include <dirq.h>
 //#include <stdlib.h>
 //#include <string.h>
