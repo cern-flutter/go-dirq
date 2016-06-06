@@ -30,6 +30,7 @@ import (
 )
 
 type (
+	// Dirq holds the configuration for a Directory Queue.
 	Dirq struct {
 		Path        string
 		Umask       uint32
@@ -37,7 +38,8 @@ type (
 		MaxLockLife time.Duration
 	}
 
-	DirqMsg struct {
+	// Message wraps messages from Dirq. A message may carry an error.
+	Message struct {
 		Message []byte
 		Error   error
 	}
@@ -70,7 +72,7 @@ func createDir(dir string, umask uint32) error {
 	return nil
 }
 
-// Construct a new DirQ handle.
+// New constructs a new DirQ handle.
 func New(path string) (*Dirq, error) {
 	if err := createDir(path, defaultUmask); err != nil {
 		return nil, err
@@ -81,7 +83,7 @@ func New(path string) (*Dirq, error) {
 	}, nil
 }
 
-// Frees the memory associated with the dirq handle.
+// Close frees the memory associated with the dirq handle.
 func (dirq *Dirq) Close() {
 	// pass
 }
@@ -153,9 +155,9 @@ func (dirq *Dirq) Produce(data []byte) error {
 }
 
 // walkFunc is called for each entry in the underlying dirq path
-func (dirq *Dirq) consumeWalkFunc(file string, info os.FileInfo, err error, channel chan<- DirqMsg) error {
+func (dirq *Dirq) consumeWalkFunc(file string, info os.FileInfo, err error, channel chan<- Message) error {
 	if err != nil {
-		channel <- DirqMsg{
+		channel <- Message{
 			Error: err,
 		}
 		return nil
@@ -191,7 +193,7 @@ func (dirq *Dirq) consumeWalkFunc(file string, info os.FileInfo, err error, chan
 		return err
 	}
 
-	channel <- DirqMsg{
+	channel <- Message{
 		Message: data,
 	}
 
@@ -201,20 +203,20 @@ func (dirq *Dirq) consumeWalkFunc(file string, info os.FileInfo, err error, chan
 // Consume messages on the DirQ directory. For long running processes,
 // you may need to call this periodically, since the channel will be closed once it is out of
 // messages, and you will lose any other coming in later.
-func (dirq *Dirq) Consume() <-chan DirqMsg {
-	channel := make(chan DirqMsg)
+func (dirq *Dirq) Consume() <-chan Message {
+	channel := make(chan Message)
 	go func() {
 		defer close(channel)
 		if err := filepath.Walk(dirq.Path, func(path string, info os.FileInfo, err error) error {
 			return dirq.consumeWalkFunc(path, info, err, channel)
 		}); err != nil {
-			channel <- DirqMsg{Error: err}
+			channel <- Message{Error: err}
 		}
 	}()
 	return channel
 }
 
-// Clean old directories and stale locks.
+// Purge cleans old directories and stale locks and temporary files.
 func (dirq *Dirq) Purge() error {
 	now := time.Now()
 	return filepath.Walk(dirq.Path, func(path string, info os.FileInfo, err error) error {

@@ -82,7 +82,7 @@ func TestAZero(t *testing.T) {
 
 	consumed := <-dirq.Consume()
 	if consumed.Error != nil {
-		t.Error("Failed to consume: %s", consumed.Error.Error())
+		t.Error("Failed to consume: ", consumed.Error.Error())
 		return
 	}
 
