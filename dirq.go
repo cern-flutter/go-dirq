@@ -16,107 +16,236 @@
 
 package dirq
 
-//#cgo pkg-config: libdirq 
-//#include <dirq.h>
-//#include <stdlib.h>
-//#include <string.h>
-//static __thread const char* buffer;
-//static __thread size_t offset, length;
-//
-//static int dirq_iow_callback(dirq_t dirq, char *out, size_t outsize)
-//{
-//	if (offset >= length)
-//		return 0;
-//	int remaining = length - offset;
-//	if (outsize > remaining)
-//		outsize = remaining;
-//	memcpy(out, buffer + offset, outsize);
-//	offset += outsize;
-//	return outsize;
-//}
-//
-//static const char* dirq_add_wrapper(dirq_t dirq, const char *msg, size_t len)
-//{
-//	buffer = msg;
-//	offset = 0;
-//	length = len;
-//	return dirq_add(dirq, dirq_iow_callback);
-//}
-import "C"
 import (
 	"fmt"
 	"io/ioutil"
-	"unsafe"
+	"math/rand"
+	"os"
+	"path"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"syscall"
+	"time"
 )
 
-type Dirq struct {
-	handle C.dirq_t
+type (
+	Dirq struct {
+		Path        string
+		Umask       uint32
+		MaxTempLife time.Duration
+		MaxLockLife time.Duration
+	}
+
+	DirqMsg struct {
+		Message []byte
+		Error   error
+	}
+)
+
+const (
+	lockSuffix = ".lck"
+	tempSuffix = ".tmp"
+)
+
+var (
+	defaultUmask       = uint32(0022)
+	defaultMaxTempLife = 300 * time.Second
+	defaultMaxLockLife = 600 * time.Second
+	directoryRegex     = regexp.MustCompile("^[0-9a-f]{8}$")
+	fileRegex          = regexp.MustCompile("^[0-9a-f]{14}$")
+)
+
+// newName generates a new name for a message
+func generateName() string {
+	now := time.Now()
+	return fmt.Sprintf("%08x%05x%01x", now.Unix(), now.Nanosecond()/1000, rand.Int()%0xF)
 }
 
-type DirqMsg struct {
-	Message []byte
-	Error   error
+// createDir creates a directory, but it does not fail if it exists
+func createDir(dir string, umask uint32) error {
+	if err := os.MkdirAll(dir, os.FileMode(0777&^umask)); err != nil && !os.IsExist(err) {
+		return err
+	}
+	return nil
 }
 
 // Construct a new DirQ handle.
-func New(path string) (dirq *Dirq, err error) {
-	cPath := C.CString(path)
-	defer C.free(unsafe.Pointer(cPath))
-
-	dirq = &Dirq{
-		handle: C.dirq_new(cPath),
+func New(path string) (*Dirq, error) {
+	if err := createDir(path, defaultUmask); err != nil {
+		return nil, err
 	}
-	if C.dirq_get_errcode(dirq.handle) != 0 {
-		errStr := C.GoString(C.dirq_get_errstr(dirq.handle))
-		err = fmt.Errorf("Failed to create the DirQ handle: %s", errStr)
-	}
-	return
+	return &Dirq{
+		Path:  path,
+		Umask: defaultUmask,
+	}, nil
 }
 
 // Frees the memory associated with the dirq handle.
 func (dirq *Dirq) Close() {
-	C.dirq_free(dirq.handle)
+	// pass
+}
+
+// lock locks a file
+func (dirq *Dirq) lock(file string) error {
+	lockPath := file + lockSuffix
+	if err := os.Link(file, lockPath); err != nil {
+		return err
+	}
+	return nil
+}
+
+// remove removes both file and lock
+func (dirq *Dirq) remove(file string) error {
+	if err := os.Remove(file); err != nil {
+		return err
+	}
+	if err := os.Remove(file + lockSuffix); err != nil {
+		return err
+	}
+	return nil
+}
+
+// generateDirName returns a directory name based on time and granularity
+func (dirq *Dirq) generateDirName() string {
+	now := time.Now()
+	return fmt.Sprintf("%08x", now.Unix())
+}
+
+// addData writes `data` into a file, returns the parent directory of the file, and the file full path
+func (dirq *Dirq) addData(data []byte) (parent string, file string, err error) {
+	parent = dirq.generateDirName()
+	if err = createDir(path.Join(dirq.Path, parent), dirq.Umask); err != nil {
+		return
+	}
+
+	file = path.Join(dirq.Path, parent, generateName()) + tempSuffix
+	var fd *os.File
+	if fd, err = os.OpenFile(file, os.O_WRONLY|os.O_CREATE, os.FileMode(0666&^dirq.Umask)); err != nil {
+		return
+	}
+	defer fd.Close()
+
+	_, err = fd.Write(data)
+	return
+}
+
+// addPath creates a hardlink to the temporary file and removes the initial one.
+func (dirq *Dirq) addPath(file, parent string) error {
+	name := generateName()
+	newPath := path.Join(dirq.Path, parent, name)
+	if err := os.Link(file, newPath); err != nil {
+		return err
+	} else if err = os.Remove(file); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Produce a single message.
+func (dirq *Dirq) Produce(data []byte) error {
+	if parent, file, err := dirq.addData(data); err != nil {
+		return err
+	} else if err = dirq.addPath(file, parent); err != nil {
+		return err
+	}
+	return nil
+}
+
+// walkFunc is called for each entry in the underlying dirq path
+func (dirq *Dirq) consumeWalkFunc(file string, info os.FileInfo, err error, channel chan<- DirqMsg) error {
+	if err != nil {
+		channel <- DirqMsg{
+			Error: err,
+		}
+		return nil
+	}
+	// Skip directory if the name does not match
+	if info.IsDir() {
+		if file == dirq.Path {
+			return nil
+		}
+		if !directoryRegex.MatchString(info.Name()) {
+			return filepath.SkipDir
+		}
+		return nil
+	}
+	// Process file
+	if !fileRegex.MatchString(info.Name()) {
+		return nil
+	}
+
+	if err = dirq.lock(file); err != nil {
+		return err
+	}
+	defer dirq.remove(file)
+
+	fd, err := os.Open(file)
+	if err != nil {
+		return err
+	}
+	defer fd.Close()
+
+	data, err := ioutil.ReadAll(fd)
+	if err != nil {
+		return err
+	}
+
+	channel <- DirqMsg{
+		Message: data,
+	}
+
+	return nil
 }
 
 // Consume messages on the DirQ directory. For long running processes,
 // you may need to call this periodically, since the channel will be closed once it is out of
 // messages, and you will lose any other coming in later.
 func (dirq *Dirq) Consume() <-chan DirqMsg {
-	messages := make(chan DirqMsg)
+	channel := make(chan DirqMsg)
 	go func() {
-		iter := C.dirq_first(dirq.handle)
-		for iter != nil {
-			var msg DirqMsg
-
-			if C.dirq_lock(dirq.handle, iter, 0) == 0 {
-				path := C.dirq_get_path(dirq.handle, iter)
-				msg.Message, msg.Error = ioutil.ReadFile(C.GoString(path))
-				C.dirq_remove(dirq.handle, iter)
-				messages <- msg
-			}
-
-			iter = C.dirq_next(dirq.handle)
+		defer close(channel)
+		if err := filepath.Walk(dirq.Path, func(path string, info os.FileInfo, err error) error {
+			return dirq.consumeWalkFunc(path, info, err, channel)
+		}); err != nil {
+			channel <- DirqMsg{Error: err}
 		}
-		close(messages)
 	}()
-	return messages
+	return channel
 }
 
-// Produce a single message.
-func (dirq *Dirq) Produce(msg []byte) error {
-	C.dirq_add_wrapper(dirq.handle, (*C.char)(unsafe.Pointer(&msg[0])), C.size_t(len(msg)))
-	if C.dirq_get_errcode(dirq.handle) != 0 {
-		errStr := C.GoString(C.dirq_get_errstr(dirq.handle))
-		return fmt.Errorf("Failed to produce a message: %s", errStr)
-	}
-	return nil
-}
-
-// Clean old directories.
+// Clean old directories and stale locks.
 func (dirq *Dirq) Purge() error {
-	if C.dirq_purge(dirq.handle) < 0 {
-		errStr := C.GoString(C.dirq_get_errstr(dirq.handle))
-		return fmt.Errorf("Failed to purge the directory queue: %s", errStr)
-	}
-	return nil
+	now := time.Now()
+	return filepath.Walk(dirq.Path, func(path string, info os.FileInfo, err error) error {
+		// Skip parent
+		if path == dirq.Path {
+			return nil
+		}
+		// If intermediate directory, try removing
+		if info.IsDir() {
+			if err := os.Remove(path); err == nil {
+				return filepath.SkipDir
+			} else if pathErr := err.(*os.PathError); pathErr.Err != syscall.ENOTEMPTY {
+				return err
+			}
+			return nil
+		}
+		// If temporary file
+		if strings.HasSuffix(info.Name(), tempSuffix) {
+			if now.Sub(info.ModTime()) > dirq.MaxTempLife {
+				return os.Remove(path)
+			}
+			return nil
+		}
+		// If lock
+		if strings.HasSuffix(info.Name(), lockSuffix) {
+			if now.Sub(info.ModTime()) > dirq.MaxLockLife {
+				return os.Remove(path)
+			}
+			return nil
+		}
+		// Everything else
+		return nil
+	})
 }
