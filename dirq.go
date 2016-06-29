@@ -17,6 +17,7 @@
 package dirq
 
 import (
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
@@ -56,6 +57,8 @@ var (
 	defaultMaxLockLife = 600 * time.Second
 	directoryRegex     = regexp.MustCompile("^[0-9a-f]{8}$")
 	fileRegex          = regexp.MustCompile("^[0-9a-f]{14}$")
+
+	ErrDone = errors.New("Done consuming")
 )
 
 // newName generates a new name for a message
@@ -155,10 +158,13 @@ func (dirq *Dirq) Produce(data []byte) error {
 }
 
 // walkFunc is called for each entry in the underlying dirq path
-func (dirq *Dirq) consumeWalkFunc(file string, info os.FileInfo, err error, channel chan<- Message) error {
+func (dirq *Dirq) consumeWalkFunc(file string, info os.FileInfo, err error, channel chan<- Message, justOne bool) error {
 	if err != nil {
 		channel <- Message{
 			Error: err,
+		}
+		if justOne {
+			return err
 		}
 		return nil
 	}
@@ -197,6 +203,9 @@ func (dirq *Dirq) consumeWalkFunc(file string, info os.FileInfo, err error, chan
 		Message: data,
 	}
 
+	if justOne {
+		return ErrDone
+	}
 	return nil
 }
 
@@ -208,12 +217,30 @@ func (dirq *Dirq) Consume() <-chan Message {
 	go func() {
 		defer close(channel)
 		if err := filepath.Walk(dirq.Path, func(path string, info os.FileInfo, err error) error {
-			return dirq.consumeWalkFunc(path, info, err, channel)
+			return dirq.consumeWalkFunc(path, info, err, channel, false)
 		}); err != nil {
 			channel <- Message{Error: err}
 		}
 	}()
 	return channel
+}
+
+// ConsumeOne consume just one message. It returns nil if empty
+func (dirq *Dirq) ConsumeOne() ([]byte, error) {
+	channel := make(chan Message, 1)
+
+	if err := filepath.Walk(dirq.Path, func(path string, info os.FileInfo, err error) error {
+		return dirq.consumeWalkFunc(path, info, err, channel, true)
+	}); err != nil && err != ErrDone {
+		return nil, err
+	}
+	close(channel)
+
+	msg, ok := <-channel
+	if ok {
+		return msg.Message, nil
+	}
+	return nil, nil
 }
 
 // Purge cleans old directories and stale locks and temporary files.

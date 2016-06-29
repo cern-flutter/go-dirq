@@ -185,6 +185,43 @@ func TestPurge2(t *testing.T) {
 	}
 }
 
+// Test the ConsumeOne call
+func TestConsumeOne(t *testing.T) {
+	dirq, err := New(dirqPath)
+	if err != nil {
+		t.Error("Failed to open the queue directory.", err.Error())
+		return
+	}
+	defer dirq.Close()
+
+	var original list.List
+	original.PushBack("HELLO")
+	original.PushBack("GOODBYE")
+	original.PushBack("HOWDY")
+
+	for iter := original.Front(); iter != nil; iter = iter.Next() {
+		err = dirq.Produce([]byte(iter.Value.(string)))
+		if err != nil {
+			t.Error("Error when producing a message.", err.Error())
+		}
+	}
+
+	var messages list.List
+	for {
+		if data, err := dirq.ConsumeOne(); err != nil {
+			t.Fatal(err)
+		} else if data == nil {
+			break
+		} else {
+			messages.PushBack(data)
+		}
+	}
+
+	if messages.Len() != original.Len() {
+		t.Errorf("Messages recovered do not match produced: %d != %d", messages.Len(), original.Len())
+	}
+}
+
 // Setup
 func TestMain(m *testing.M) {
 	os.RemoveAll(dirqPath)
