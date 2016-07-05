@@ -129,9 +129,12 @@ func (dirq *Dirq) addData(data []byte) (parent string, file string, err error) {
 	if fd, err = os.OpenFile(file, os.O_WRONLY|os.O_CREATE, os.FileMode(0666&^dirq.Umask)); err != nil {
 		return
 	}
-	defer fd.Close()
 
-	_, err = fd.Write(data)
+	if _, err = fd.Write(data); err != nil {
+		fd.Close()
+	} else {
+		err = fd.Close()
+	}
 	return
 }
 
@@ -241,6 +244,35 @@ func (dirq *Dirq) ConsumeOne() ([]byte, error) {
 		return msg.Message, nil
 	}
 	return nil, nil
+}
+
+// Empty returns true if there is nothing else in the queue
+func (dirq *Dirq) Empty() (bool, error) {
+	var err error
+	if err = filepath.Walk(dirq.Path, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		// Skip directory if the name does not match
+		if info.IsDir() {
+			if path == dirq.Path {
+				return nil
+			}
+			if !directoryRegex.MatchString(info.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		// Process file
+		if !fileRegex.MatchString(info.Name()) {
+			return nil
+		}
+		// We got one!
+		return ErrDone
+	}); err != nil && err != ErrDone {
+		return true, err
+	}
+	return err == nil, nil
 }
 
 // Purge cleans old directories and stale locks and temporary files.

@@ -206,6 +206,12 @@ func TestConsumeOne(t *testing.T) {
 		}
 	}
 
+	if empty, err := dirq.Empty(); err != nil {
+		t.Fatal(err)
+	} else if empty {
+		t.Fatal("Expecting Empty to be false")
+	}
+
 	var messages list.List
 	for {
 		if data, err := dirq.ConsumeOne(); err != nil {
@@ -220,6 +226,12 @@ func TestConsumeOne(t *testing.T) {
 	if messages.Len() != original.Len() {
 		t.Errorf("Messages recovered do not match produced: %d != %d", messages.Len(), original.Len())
 	}
+	if empty, err := dirq.Empty(); err != nil {
+		t.Fatal(err)
+	} else if !empty {
+		t.Fatal("Expecting Empty to be true")
+	}
+
 }
 
 // Setup
