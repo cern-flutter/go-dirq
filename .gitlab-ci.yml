@@ -1,5 +1,7 @@
 image: golang:1.6
 
 test:
-    script: "go test -v -cover"
+    script:
+        - go vet
+        - go test -v -cover -race
 
